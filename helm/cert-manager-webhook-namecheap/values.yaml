@@ -1,0 +1,76 @@
+# Default values for cert-manager-webhook-namecheap
+
+# groupName must be a unique API group name for this webhook.
+# It must match across: ClusterIssuer config, APIService, and RBAC.
+groupName: acme.myk3s.org
+
+image:
+  repository: ghcr.io/yourusername/cert-manager-webhook-namecheap
+  tag: latest
+  pullPolicy: Always
+
+replicaCount: 1
+
+# Namecheap credentials.
+# WICHTIG: API-Keys NIEMALS hier eintragen — Secret manuell anlegen:
+#
+#   kubectl create secret generic namecheap-credentials \
+#     --namespace cert-manager \
+#     --from-literal=apiUser=Ghostrider92 \
+#     --from-literal=apiKey=DEIN_API_KEY \
+#     --from-literal=username=Ghostrider92
+#
+credentials:
+  existingSecret: "namecheap-credentials"
+  create: false
+
+certManager:
+  namespace: cert-manager
+  serviceAccountName: cert-manager
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 443
+
+# TLS certificate for the webhook itself (issued by cert-manager via self-signed issuer)
+tls:
+  duration: 8760h
+  renewBefore: 360h
+
+# --- Wildcard Issuer ---
+# Erzeugt ClusterIssuers (staging + prod) und Wildcard Certificate CRs.
+clusterIssuers:
+  enabled: true
+  email: "jus@xmail.dev"
+
+  # staging: true  -> Let's Encrypt staging (kein echtes Zertifikat, keine Rate-Limits)
+  # staging: false -> Let's Encrypt production
+  staging: true
+
+  # Wildcards: Liste der Domains für Wildcard-Zertifikate.
+  # Felder pro Eintrag:
+  #   domain:      (required) Apex-Domain
+  #   secretName:  (optional) default: "<domain-mit-bindestrichen>-wildcard-tls"
+  #   namespace:   (optional) default: "cert-manager"
+  #   duration:    (optional) default: "2160h" (90 Tage)
+  #   renewBefore: (optional) default: "360h" (15 Tage)
+  wildcards:
+    - domain: myk3s.org
+      secretName: myk3s-wildcard-tls
+      namespace: cert-manager

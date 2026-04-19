@@ -1,0 +1,76 @@
+{{- if .Values.clusterIssuers.enabled }}
+{{- $groupName := .Values.groupName }}
+{{- $secretName := .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
+{{- $email := .Values.clusterIssuers.email }}
+{{- $staging := .Values.clusterIssuers.staging }}
+{{- $relNs := .Release.Namespace }}
+
+{{- /* Always create both issuers — staging for testing, prod for real certs */ }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ $email | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+      - dns01:
+          webhook:
+            groupName: {{ $groupName | quote }}
+            solverName: namecheap
+            config:
+              secretName: {{ $secretName | quote }}
+              secretNamespace: {{ $relNs | quote }}
+
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ $email | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - dns01:
+          webhook:
+            groupName: {{ $groupName | quote }}
+            solverName: namecheap
+            config:
+              secretName: {{ $secretName | quote }}
+              secretNamespace: {{ $relNs | quote }}
+
+{{- /* One Certificate CR per domain entry */ }}
+{{- range .Values.clusterIssuers.wildcards }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .domain | replace "." "-" }}-wildcard
+  namespace: {{ .namespace | default "cert-manager" }}
+  labels:
+    {{- include "webhook.labels" $ | nindent 4 }}
+    cert-manager-webhook-namecheap/domain: {{ .domain | quote }}
+spec:
+  secretName: {{ .secretName | default (printf "%s-wildcard-tls" (.domain | replace "." "-")) }}
+  duration: {{ .duration | default "2160h" }}
+  renewBefore: {{ .renewBefore | default "360h" }}
+  issuerRef:
+    name: {{ if $staging }}letsencrypt-staging{{ else }}letsencrypt-prod{{ end }}
+    kind: ClusterIssuer
+  dnsNames:
+    - {{ .domain | quote }}
+    - {{ printf "*.%s" .domain | quote }}
+{{- end }}
+
+{{- end }}

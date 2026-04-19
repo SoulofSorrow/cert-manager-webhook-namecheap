@@ -1,0 +1,101 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-manager-webhook-namecheap
+  namespace: cert-manager
+  labels:
+    app: cert-manager-webhook-namecheap
+
+---
+# Allow the webhook to read secrets (for credential lookup)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-manager-webhook-namecheap:secrets
+  labels:
+    app: cert-manager-webhook-namecheap
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-webhook-namecheap:secrets
+  labels:
+    app: cert-manager-webhook-namecheap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-webhook-namecheap:secrets
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager-webhook-namecheap
+    namespace: cert-manager
+
+---
+# Allow cert-manager to validate/admit the webhook's resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-manager-webhook-namecheap:flowschemas
+  labels:
+    app: cert-manager-webhook-namecheap
+rules:
+  - apiGroups: ["flowcontrol.apiserver.k8s.io"]
+    resources: ["prioritylevelconfigurations", "flowschemas"]
+    verbs: ["list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-webhook-namecheap:flowschemas
+  labels:
+    app: cert-manager-webhook-namecheap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-webhook-namecheap:flowschemas
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager-webhook-namecheap
+    namespace: cert-manager
+
+---
+# cert-manager needs to call the webhook's API group
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-manager-webhook-namecheap:domain-solver
+  labels:
+    app: cert-manager-webhook-namecheap
+rules:
+  - apiGroups:
+      - acme.yourdomain.com   # must match GROUP_NAME env var / main.go
+    resources:
+      - "*"
+    verbs:
+      - create
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-webhook-namecheap:domain-solver
+  labels:
+    app: cert-manager-webhook-namecheap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-webhook-namecheap:domain-solver
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager

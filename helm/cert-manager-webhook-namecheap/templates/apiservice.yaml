@@ -1,0 +1,50 @@
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.{{ .Values.groupName }}
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: "{{ .Release.Namespace }}/{{ include "webhook.fullname" . }}-tls"
+spec:
+  group: {{ .Values.groupName }}
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: {{ include "webhook.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+  version: v1alpha1
+  insecureSkipTLSVerify: false
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "webhook.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "webhook.fullname" . }}-tls
+  duration: {{ .Values.tls.duration }}
+  renewBefore: {{ .Values.tls.renewBefore }}
+  issuerRef:
+    name: {{ include "webhook.fullname" . }}-ca
+    kind: Issuer
+  dnsNames:
+    - {{ include "webhook.fullname" . }}
+    - {{ include "webhook.fullname" . }}.{{ .Release.Namespace }}
+    - {{ include "webhook.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "webhook.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "webhook.fullname" . }}-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}

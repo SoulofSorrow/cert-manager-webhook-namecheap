@@ -1,0 +1,104 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webhook.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "webhook.fullname" . }}
+      containers:
+        - name: webhook
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: GROUP_NAME
+              value: {{ .Values.groupName | quote }}
+            - name: NAMECHEAP_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
+                  key: apiUser
+                  optional: true
+            - name: NAMECHEAP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
+                  key: apiKey
+                  optional: true
+            - name: NAMECHEAP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
+                  key: username
+                  optional: true
+            # NAMECHEAP_CLIENT_IP wird NICHT mehr benoetigt
+            # Der Webhook ermittelt seine eigene Egress-IP automatisch
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: dryrun
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: certs
+          secret:
+            secretName: {{ include "webhook.fullname" . }}-tls
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "webhook.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.service.port }}
+      targetPort: https
+      protocol: TCP
+    - name: dryrun
+      port: 8080
+      targetPort: dryrun
+      protocol: TCP

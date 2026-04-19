@@ -1,0 +1,113 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager-webhook-namecheap
+  namespace: cert-manager
+  labels:
+    app: cert-manager-webhook-namecheap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cert-manager-webhook-namecheap
+  template:
+    metadata:
+      labels:
+        app: cert-manager-webhook-namecheap
+    spec:
+      serviceAccountName: cert-manager-webhook-namecheap
+      containers:
+        - name: webhook
+          image: ghcr.io/yourusername/cert-manager-webhook-namecheap:latest
+          imagePullPolicy: Always
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: GROUP_NAME
+              value: "acme.yourdomain.com"
+            - name: NAMECHEAP_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: namecheap-credentials
+                  key: apiUser
+                  optional: true
+            - name: NAMECHEAP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: namecheap-credentials
+                  key: apiKey
+                  optional: true
+            - name: NAMECHEAP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: namecheap-credentials
+                  key: username
+                  optional: true
+            # NAMECHEAP_CLIENT_IP is no longer needed.
+            # The webhook resolves its own public egress IP automatically.
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: dryrun
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: certs
+          secret:
+            secretName: cert-manager-webhook-namecheap-tls
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cert-manager-webhook-namecheap
+  namespace: cert-manager
+  labels:
+    app: cert-manager-webhook-namecheap
+spec:
+  selector:
+    app: cert-manager-webhook-namecheap
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+    - name: dryrun
+      port: 8080
+      targetPort: dryrun
+      protocol: TCP
