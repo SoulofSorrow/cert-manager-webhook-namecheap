@@ -5,7 +5,7 @@
 {{- $staging := .Values.clusterIssuers.staging }}
 {{- $relNs := .Release.Namespace }}
 
-{{- /* Always create both issuers — staging for testing, prod for real certs */ }}
+{{/* Always create both issuers: staging for testing, prod for real certs */}}
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -50,7 +50,7 @@ spec:
               secretName: {{ $secretName | quote }}
               secretNamespace: {{ $relNs | quote }}
 
-{{- /* One Certificate CR per domain entry */ }}
+{{/* One Certificate CR per domain entry */}}
 {{- range .Values.clusterIssuers.wildcards }}
 ---
 apiVersion: cert-manager.io/v1
