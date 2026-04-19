@@ -2,10 +2,15 @@ FROM golang:1.21-alpine AS builder
 
 WORKDIR /build
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy module files. go.sum is optional — generated if missing.
+COPY go.mod go.su[m] ./
 
+# Copy source first so go mod tidy can resolve actual imports
 COPY . .
+
+# Generate/refresh go.sum and download all dependencies
+RUN go mod tidy && go mod download
+
 RUN CGO_ENABLED=0 GOOS=linux go build -o webhook ./cmd/webhook
 
 # ---
