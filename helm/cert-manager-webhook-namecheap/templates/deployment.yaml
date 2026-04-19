@@ -45,14 +45,15 @@ spec:
                   name: {{ .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
                   key: username
                   optional: true
-            # NAMECHEAP_CLIENT_IP wird NICHT mehr benoetigt
-            # Der Webhook ermittelt seine eigene Egress-IP automatisch
+            - name: NAMECHEAP_CLIENT_IP
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret | default (include "webhook.fullname" .) }}
+                  key: clientIP
+                  optional: true
           ports:
             - name: https
               containerPort: 443
-              protocol: TCP
-            - name: dryrun
-              containerPort: 8080
               protocol: TCP
           livenessProbe:
             httpGet:
@@ -97,8 +98,4 @@ spec:
     - name: https
       port: {{ .Values.service.port }}
       targetPort: https
-      protocol: TCP
-    - name: dryrun
-      port: 8080
-      targetPort: dryrun
       protocol: TCP

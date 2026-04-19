@@ -2,27 +2,25 @@
 
 # groupName must be a unique API group name for this webhook.
 # It must match across: ClusterIssuer config, APIService, and RBAC.
-groupName: acme.myk3s.org
+groupName: acme.yourdomain.com
 
 image:
-  repository: ghcr.io/yourusername/cert-manager-webhook-namecheap
+  repository: ghcr.io/soulofsorrow/cert-manager-webhook-namecheap
   tag: latest
   pullPolicy: Always
 
 replicaCount: 1
 
-# Namecheap credentials.
-# WICHTIG: API-Keys NIEMALS hier eintragen — Secret manuell anlegen:
-#
-#   kubectl create secret generic namecheap-credentials \
-#     --namespace cert-manager \
-#     --from-literal=apiUser=Ghostrider92 \
-#     --from-literal=apiKey=DEIN_API_KEY \
-#     --from-literal=username=Ghostrider92
-#
+# Namecheap credentials secret.
 credentials:
+  # Name of an existing secret with keys: apiUser, apiKey, username, clientIP
   existingSecret: "namecheap-credentials"
+  # Set create: true to let the chart create the secret (not recommended for production)
   create: false
+  apiUser: ""
+  apiKey: ""
+  username: ""
+  # clientIP is no longer needed - resolved automatically at runtime
 
 certManager:
   namespace: cert-manager
@@ -54,23 +52,57 @@ tls:
   renewBefore: 360h
 
 # --- Wildcard Issuer ---
-# Erzeugt ClusterIssuers (staging + prod) und Wildcard Certificate CRs.
+# Creates ClusterIssuers (staging + prod) and wildcard Certificate CRs.
+#
+# Minimal setup:
+#
+#   clusterIssuers:
+#     enabled: true
+#     email: "deine@email.de"
+#     staging: true          # erst staging testen, dann auf false setzen
+#     wildcards:
+#       - domain: groot.rocks
+#         secretName: groot-rocks-wildcard-tls
+#         namespace: cert-manager
+#
+# Das erzeugt:
+#   - ClusterIssuer/letsencrypt-staging
+#   - ClusterIssuer/letsencrypt-prod
+#   - Certificate/groot-rocks-wildcard (namespace: cert-manager)
+#     -> Secret/groot-rocks-wildcard-tls mit tls.crt + tls.key
+#
+# Das Secret kannst du dann in jedem Ingress referenzieren:
+#
+#   spec:
+#     tls:
+#       - hosts: ["*.groot.rocks"]
+#         secretName: groot-rocks-wildcard-tls
+#
 clusterIssuers:
-  enabled: true
-  email: "jus@xmail.dev"
+  enabled: false
+  email: "your@email.com"
 
   # staging: true  -> Let's Encrypt staging (kein echtes Zertifikat, keine Rate-Limits)
-  # staging: false -> Let's Encrypt production
-  staging: true
+  # staging: false -> Let's Encrypt production (echtes Zertifikat)
+  staging: false
 
-  # Wildcards: Liste der Domains für Wildcard-Zertifikate.
-  # Felder pro Eintrag:
-  #   domain:      (required) Apex-Domain
-  #   secretName:  (optional) default: "<domain-mit-bindestrichen>-wildcard-tls"
-  #   namespace:   (optional) default: "cert-manager"
-  #   duration:    (optional) default: "2160h" (90 Tage)
-  #   renewBefore: (optional) default: "360h" (15 Tage)
-  wildcards:
-    - domain: myk3s.org
-      secretName: myk3s-wildcard-tls
-      namespace: cert-manager
+  # Wildcards: Liste der Domains für die Wildcard-Zertifikate ausgestellt werden sollen.
+  # Jeder Eintrag erzeugt ein Certificate CR mit apex + wildcard SAN.
+  #
+  # Felder:
+  #   domain:      (required) Apex-Domain, z.B. "groot.rocks"
+  #   secretName:  (optional) Name des TLS-Secrets, default: "<domain-mit-bindestrichen>-wildcard-tls"
+  #   namespace:   (optional) Namespace für das Certificate CR, default: "cert-manager"
+  #   duration:    (optional) Zertifikatslaufzeit, default: "2160h" (90 Tage)
+  #   renewBefore: (optional) Wie früh erneuert wird, default: "360h" (15 Tage)
+  wildcards: []
+  # Beispiel:
+  # wildcards:
+  #   - domain: groot.rocks
+  #     secretName: groot-rocks-wildcard-tls
+  #     namespace: cert-manager
+  #   - domain: anderedomain.de
+  #     secretName: anderedomain-wildcard-tls
+  #     namespace: cert-manager
+  #     duration: 2160h
+  #     renewBefore: 360h

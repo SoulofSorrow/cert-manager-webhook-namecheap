@@ -8,6 +8,45 @@ metadata:
     {{- include "webhook.labels" . | nindent 4 }}
 
 ---
+# Required for extension API server: read the extension-apiserver-authentication
+# ConfigMap from kube-system to validate incoming requests from the Kubernetes API server.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "webhook.fullname" . }}:extension-apiserver-authentication-reader
+  namespace: kube-system
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: {{ include "webhook.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+
+---
+# Required for extension API server: TokenReview and SubjectAccessReview
+# to authenticate/authorize incoming requests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "webhook.fullname" . }}:auth-delegator
+  labels:
+    {{- include "webhook.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: {{ include "webhook.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

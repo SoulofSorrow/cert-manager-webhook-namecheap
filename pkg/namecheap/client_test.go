@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -483,4 +484,217 @@ func parseSetHostsFromForm(r *http.Request) []Host {
 		})
 	}
 	return hosts
+}
+
+// TestAddTXTRecord_ConcurrentSerializesPerDomain verifies that concurrent
+// AddTXTRecord calls for the SAME domain are serialized via the per-domain mutex.
+// Without the lock, both calls would read the same baseline and one would
+// overwrite the other (race condition seen with wildcard certs).
+func TestAddTXTRecord_ConcurrentSerializesPerDomain(t *testing.T) {
+	existingHosts := []Host{
+		{Name: "@", Type: "A", Address: "1.2.3.4", TTL: "1800"},
+	}
+
+	var (
+		mu              sync.Mutex
+		setHostsCalls   int
+		lastWrittenHosts []Host
+	)
+
+	ipSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.2.3.4"))
+	}))
+	defer ipSrv.Close()
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		cmd := r.FormValue("Command")
+		w.Header().Set("Content-Type", "text/xml")
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch cmd {
+		case "namecheap.domains.dns.getHosts":
+			resp := mockGetHostsResponse{Status: "OK"}
+			resp.CommandResponse.DomainDNSGetHostsResult.Hosts = existingHosts
+			xml.NewEncoder(w).Encode(resp)
+
+		case "namecheap.domains.dns.setHosts":
+			setHostsCalls++
+			hosts := parseSetHostsFromForm(r)
+			lastWrittenHosts = hosts
+			existingHosts = hosts // persist for next read
+			w.Write([]byte(`<ApiResponse Status="OK"><CommandResponse /></ApiResponse>`))
+		}
+	}))
+	defer apiSrv.Close()
+
+	client := NewClient("user", "key", "user").
+		WithEndpoint(apiSrv.URL).
+		WithIPEndpoint(ipSrv.URL)
+
+	// Simulate the wildcard cert scenario: two concurrent challenges
+	// for the same domain trying to add different TXT records.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if err := client.AddTXTRecord("example.com", "_acme-challenge", "token-A"); err != nil {
+			t.Errorf("AddTXTRecord A: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if err := client.AddTXTRecord("example.com", "_acme-challenge", "token-B"); err != nil {
+			t.Errorf("AddTXTRecord B: %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Both setHosts calls must have happened
+	if setHostsCalls != 2 {
+		t.Fatalf("expected 2 setHosts calls, got %d", setHostsCalls)
+	}
+
+	// CRITICAL: both tokens must be present in the final state
+	hasTokenA, hasTokenB := false, false
+	for _, h := range lastWrittenHosts {
+		if h.Type == "TXT" && h.Name == "_acme-challenge" {
+			if h.Address == "token-A" {
+				hasTokenA = true
+			}
+			if h.Address == "token-B" {
+				hasTokenB = true
+			}
+		}
+	}
+	if !hasTokenA || !hasTokenB {
+		t.Errorf("race condition: both tokens should be present, got tokenA=%v tokenB=%v final=%+v",
+			hasTokenA, hasTokenB, lastWrittenHosts)
+	}
+}
+
+// TestAddTXTRecord_DifferentDomainsRunInParallel verifies that the lock is
+// per-domain, not global — different domains should not block each other.
+func TestAddTXTRecord_DifferentDomainsRunInParallel(t *testing.T) {
+	hostsByDomain := map[string][]Host{
+		"example.com": {{Name: "@", Type: "A", Address: "1.2.3.4", TTL: "1800"}},
+		"example.org": {{Name: "@", Type: "A", Address: "1.2.3.4", TTL: "1800"}},
+	}
+	var mu sync.Mutex
+
+	ipSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.2.3.4"))
+	}))
+	defer ipSrv.Close()
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		cmd := r.FormValue("Command")
+		domain := r.FormValue("SLD") + "." + r.FormValue("TLD")
+		w.Header().Set("Content-Type", "text/xml")
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch cmd {
+		case "namecheap.domains.dns.getHosts":
+			resp := mockGetHostsResponse{Status: "OK"}
+			resp.CommandResponse.DomainDNSGetHostsResult.Hosts = hostsByDomain[domain]
+			xml.NewEncoder(w).Encode(resp)
+		case "namecheap.domains.dns.setHosts":
+			hostsByDomain[domain] = parseSetHostsFromForm(r)
+			w.Write([]byte(`<ApiResponse Status="OK"><CommandResponse /></ApiResponse>`))
+		}
+	}))
+	defer apiSrv.Close()
+
+	client := NewClient("user", "key", "user").
+		WithEndpoint(apiSrv.URL).
+		WithIPEndpoint(ipSrv.URL)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if err := client.AddTXTRecord("example.com", "_acme-challenge", "token-com"); err != nil {
+			t.Errorf("AddTXTRecord com: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if err := client.AddTXTRecord("example.org", "_acme-challenge", "token-org"); err != nil {
+			t.Errorf("AddTXTRecord org: %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(hostsByDomain["example.com"]) != 2 {
+		t.Errorf("example.com should have 2 records, got %d", len(hostsByDomain["example.com"]))
+	}
+	if len(hostsByDomain["example.org"]) != 2 {
+		t.Errorf("example.org should have 2 records, got %d", len(hostsByDomain["example.org"]))
+	}
+}
+
+// TestAddTXTRecord_IdempotentSkipsDuplicate verifies that adding the same
+// record twice is a no-op (no setHosts on the second call).
+func TestAddTXTRecord_IdempotentSkipsDuplicate(t *testing.T) {
+	existingHosts := []Host{
+		{Name: "@", Type: "A", Address: "1.2.3.4", TTL: "1800"},
+		{Name: "_acme-challenge", Type: "TXT", Address: "existing-token", TTL: "60"},
+	}
+	setHostsCalled := false
+
+	ipSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("1.2.3.4"))
+	}))
+	defer ipSrv.Close()
+
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		cmd := r.FormValue("Command")
+		w.Header().Set("Content-Type", "text/xml")
+		switch cmd {
+		case "namecheap.domains.dns.getHosts":
+			resp := mockGetHostsResponse{Status: "OK"}
+			resp.CommandResponse.DomainDNSGetHostsResult.Hosts = existingHosts
+			xml.NewEncoder(w).Encode(resp)
+		case "namecheap.domains.dns.setHosts":
+			setHostsCalled = true
+			w.Write([]byte(`<ApiResponse Status="OK"><CommandResponse /></ApiResponse>`))
+		}
+	}))
+	defer apiSrv.Close()
+
+	client := NewClient("user", "key", "user").
+		WithEndpoint(apiSrv.URL).
+		WithIPEndpoint(ipSrv.URL)
+
+	if err := client.AddTXTRecord("example.com", "_acme-challenge", "existing-token"); err != nil {
+		t.Fatalf("AddTXTRecord: %v", err)
+	}
+
+	if setHostsCalled {
+		t.Error("setHosts should not be called when record already exists")
+	}
 }

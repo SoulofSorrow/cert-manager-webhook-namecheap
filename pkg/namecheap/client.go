@@ -23,6 +23,11 @@ const (
 // Client communicates with the Namecheap API.
 // The public egress IP is resolved automatically and cached — it does not need
 // to be provided as configuration.
+//
+// Concurrent operations on the same domain are serialized via per-domain mutexes
+// to prevent race conditions in the read-merge-write cycle of setHosts.
+// This is critical for wildcard certificates where two challenges (apex + wildcard)
+// run in parallel against the same _acme-challenge record name.
 type Client struct {
 	apiUser    string
 	apiKey     string
@@ -34,17 +39,37 @@ type Client struct {
 	ipMu        sync.Mutex
 	cachedIP    string
 	ipFetchedAt time.Time
+
+	// domainLocks ensures only one read-merge-write cycle per domain at a time.
+	domainLocksMu sync.Mutex
+	domainLocks   map[string]*sync.Mutex
 }
 
 func NewClient(apiUser, apiKey, username string) *Client {
 	return &Client{
-		apiUser:    apiUser,
-		apiKey:     apiKey,
-		username:   username,
-		endpoint:   defaultAPIEndpoint,
-		ipEndpoint: defaultIPEndpoint,
-		httpClient: &http.Client{Timeout: defaultTimeout},
+		apiUser:     apiUser,
+		apiKey:      apiKey,
+		username:    username,
+		endpoint:    defaultAPIEndpoint,
+		ipEndpoint:  defaultIPEndpoint,
+		httpClient:  &http.Client{Timeout: defaultTimeout},
+		domainLocks: make(map[string]*sync.Mutex),
 	}
+}
+
+// lockDomain returns a mutex specific to the given domain.
+// Multiple Present/CleanUp calls for the same domain are serialized;
+// calls for different domains run in parallel.
+func (c *Client) lockDomain(domain string) *sync.Mutex {
+	c.domainLocksMu.Lock()
+	defer c.domainLocksMu.Unlock()
+
+	if mu, ok := c.domainLocks[domain]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	c.domainLocks[domain] = mu
+	return mu
 }
 
 // WithEndpoint overrides the Namecheap API endpoint — used in tests.
@@ -127,7 +152,14 @@ func (c *Client) SetHosts(sld, tld string, hosts []Host) error {
 
 // AddTXTRecord reads existing records, appends the TXT record, and writes all back.
 // Namecheap's setHosts replaces all records atomically, so a read-merge-write is required.
+//
+// This method holds a per-domain lock to prevent race conditions when multiple
+// challenges (e.g. apex + wildcard) run in parallel against the same record name.
 func (c *Client) AddTXTRecord(domain, subdomain, value string) error {
+	mu := c.lockDomain(domain)
+	mu.Lock()
+	defer mu.Unlock()
+
 	sld, tld, err := SplitDomain(domain)
 	if err != nil {
 		return err
@@ -136,6 +168,13 @@ func (c *Client) AddTXTRecord(domain, subdomain, value string) error {
 	hosts, err := c.GetHosts(sld, tld)
 	if err != nil {
 		return fmt.Errorf("get hosts: %w", err)
+	}
+
+	// Skip if an identical record already exists (idempotent)
+	for _, h := range hosts {
+		if h.Type == "TXT" && h.Name == subdomain && h.Address == value {
+			return nil
+		}
 	}
 
 	hosts = append(hosts, Host{
@@ -149,8 +188,14 @@ func (c *Client) AddTXTRecord(domain, subdomain, value string) error {
 }
 
 // RemoveTXTRecord reads existing records, removes the exact matching TXT record,
-// and writes all back.
+// and writes all back. Idempotent: succeeds silently if the record does not exist.
+//
+// Holds the same per-domain lock as AddTXTRecord.
 func (c *Client) RemoveTXTRecord(domain, subdomain, value string) error {
+	mu := c.lockDomain(domain)
+	mu.Lock()
+	defer mu.Unlock()
+
 	sld, tld, err := SplitDomain(domain)
 	if err != nil {
 		return err
@@ -170,7 +215,7 @@ func (c *Client) RemoveTXTRecord(domain, subdomain, value string) error {
 	}
 
 	if len(filtered) == len(hosts) {
-		// Nothing to remove — still succeed silently (idempotent cleanup)
+		// Nothing to remove — succeed silently (idempotent cleanup)
 		return nil
 	}
 
@@ -182,7 +227,13 @@ func (c *Client) RemoveTXTRecord(domain, subdomain, value string) error {
 //
 // For Let's Encrypt, ca should be "letsencrypt.org".
 // Both "issue" and "issuewild" tags are added.
+//
+// Holds the same per-domain lock as AddTXTRecord/RemoveTXTRecord.
 func (c *Client) EnsureCAARecords(domain, ca string) error {
+	mu := c.lockDomain(domain)
+	mu.Lock()
+	defer mu.Unlock()
+
 	sld, tld, err := SplitDomain(domain)
 	if err != nil {
 		return err
